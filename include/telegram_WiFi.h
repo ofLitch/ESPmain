@@ -15,11 +15,11 @@
 extern const char TELEGRAM_CERTIFICATE_ROOT[];
 
 // Definiciones
-#define DELAY_TIME 1000 ///< Tiempo de espera entre envíos (en milisegundos)
+#define DELAY_TIME 2200 ///< Tiempo de espera entre envíos (en milisegundos)
 
 // Funciones
 String checkThresholds();
-void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId);
+void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, SensorData buffer);
 
 /**
  * @brief Tarea que se encarga de conectarse a WiFi y enviar datos al bot de Telegram.
@@ -36,12 +36,16 @@ void taskTelegram_WiFi(void *pvParameters) {
     const char *chatID = (const char *)params[4];
 
     // Conexión a WiFi
-    WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSSID, wifiPassword);
     while (WiFi.status() != WL_CONNECTED) {
         Serial.print(".");
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    Serial.println("\nConectado a WiFi");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("MAC address: ");
+    Serial.println(WiFi.macAddress());
     Serial.println("\n✅ WiFi conectado");
 
     // Inicializar cliente seguro y bot de Telegram
@@ -51,15 +55,17 @@ void taskTelegram_WiFi(void *pvParameters) {
 
     // Notificar inicio
     bot.sendMessage(chatID, "🤖 *Sistema VerdeVital conectado a WiFi y listo para recibir datos*", "Markdown");
-
+    bot.sendMessage(chatID, "🌱 Instrucciones de funcionamiento usa /verDatos para ver los datos actuales, /verUmbrales para ver los umbrales actuales, /modificarUmbral <parametro> <valor> para modificar un umbral :3", "Markdown");
+    SensorData buffer;
     while (true) {
-        if (xSemaphoreTake(mutex, pdMS_TO_TICKS(1000))) {
+        if (xSemaphoreTake(mutex, portMAX_DELAY)) {
             // Verificar umbrales y notificar si se superan
             String alert = checkThresholds();
             if (alert.length() > 0) bot.sendMessage(chatID, alert, "Markdown");
             
             // Cambiar el estado del bot si se recibe un comando
-            handleTelegramCommands(bot, chatID);
+            buffer = data;
+            handleTelegramCommands(bot, chatID, buffer);
             xSemaphoreGive(mutex); // Liberar el mutex
         } else {
             Serial.println("⚠️ No se pudo obtener el mutex para enviar datos");
@@ -81,7 +87,7 @@ String checkThresholds() {
     return alert;
 }
 
-void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId) {
+void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, SensorData buffer) {
     int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
 
     while (numNewMessages) {
@@ -91,10 +97,10 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId) {
 
             if (sender != chatId) continue;
 
-            if (msg.startsWith("/modificar")) {
-                int space1 = msg.indexOf(' ', 5);
+            if (msg.startsWith("/modificarUmbral")) {
+                int space1 = msg.indexOf(' ', 17);
                 if (space1 > 0) {
-                    String param = msg.substring(5, space1);
+                    String param = msg.substring(17, space1);
                     String valueStr = msg.substring(space1 + 1);
                     float value = valueStr.toFloat();
 
@@ -120,7 +126,18 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId) {
             }
 
             // Ver umbrales actuales
-            if (msg == "/ver") {
+            if (msg == "/verDatos") {
+                String report = "📊 *Datos actuales:*\n";
+                report += "🔅 Luz: " + String(buffer.light) + " lx\n"
+                        + "🌡 Temp: " + String(buffer.temperature) + " °C\n"
+                        + "💧 Hum: " + String(buffer.humidity) + " %\n"
+                        + "🌫 PPM: " + String(buffer.ppm) + "\n"
+                        + "🌱 Suelo: " + String(buffer.soilWet);
+                bot.sendMessage(chatId, report, "Markdown");
+            }
+
+            // Ver umbrales actuales
+            if (msg == "/verUmbrales") {
                 String report = "📊 *Umbrales actuales:*\n";
                 report += "🔅 Luz < " + String(thresholds.light) + "\n";
                 report += "🌡 Temp > " + String(thresholds.temperature) + "\n";

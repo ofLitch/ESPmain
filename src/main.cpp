@@ -23,6 +23,7 @@
 #include "sensorData.h"
 #include "printData.h"
 #include "telegram_WiFi.h"
+#include "esp_main_now.h"
 
 /* =========== Definiciones ============ */
 #define WIFI_SSID             "Pomona Altos"                        ///< Nombre de la red WiFi
@@ -52,19 +53,20 @@ void setup() {
   const char *chatID = CHAT_ID;
 
   // Instancias
-  SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
+  static SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
 
   // Inicializar
   Serial.begin(115200);
+  WiFi.mode(WIFI_MODE_STA);
 
   // Parámetros para tasks
-  void *paramData[1] = {mutex};
   void *paramTelegram_WiFi[5] = {mutex, (void *)wifiSSID, (void *)wifiPassword, (void *)botToken, (void *)chatID};
+  void *paramEspNow[1] = {mutex};
 
   // Tasks para conexiones
   xTaskCreate(taskTelegram_WiFi, "Telegram WiFi", 8192, paramTelegram_WiFi, 2, NULL);
-  // Tarea para imprimir datos
-  xTaskCreate(taskPrintData, "Print Sensor Data", 2048, paramData, 2, NULL);
+  xTaskCreate(taskEspNow, "ESP-NOW", 4096, paramEspNow, 1, NULL);
+  //xTaskCreate(taskPrintData, "Print Sensor Data", 2048, paramData, 2, NULL);
 }
 
 void loop() {}
