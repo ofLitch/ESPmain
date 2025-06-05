@@ -15,11 +15,12 @@
 extern const char TELEGRAM_CERTIFICATE_ROOT[];
 
 // Definiciones
-#define DELAY_TIME 2200 ///< Tiempo de espera entre envíos (en milisegundos)
+#define TELEGRAM_DELAY_TIME 3000 ///< Tiempo de espera entre envíos (en milisegundos)
+#define COMMANDS_DELAY_TIME 500 ///< Tiempo de espera entre envíos (en milisegundos)
+extern SemaphoreHandle_t mutex;
 
 // Funciones
-String checkThresholds();
-void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, SensorData buffer);
+void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatID, SensorData buffer);
 
 /**
  * @brief Tarea que se encarga de conectarse a WiFi y enviar datos al bot de Telegram.
@@ -28,25 +29,16 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, Sen
  */
 void taskTelegram_WiFi(void *pvParameters) {
     // Extraer los parámetros
-    void **params = (void **)pvParameters;
-    SemaphoreHandle_t mutex = (SemaphoreHandle_t)params[0];   
-    const char *wifiSSID = (const char *)params[1];
-    const char *wifiPassword = (const char *)params[2];
-    const char *botToken = (const char *)params[3];
-    const char *chatID = (const char *)params[4];
+    void **params = (void **)pvParameters;  
+    const char *botToken = (const char *)params[0];
+    const char *chatID = (const char *)params[1];
 
     // Conexión a WiFi
-    WiFi.begin(wifiSSID, wifiPassword);
     while (WiFi.status() != WL_CONNECTED) {
         Serial.print(".");
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-    Serial.println("\nConectado a WiFi");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("MAC address: ");
-    Serial.println(WiFi.macAddress());
-    Serial.println("\n✅ WiFi conectado");
+    Serial.println("\n🛜 WiFi conectado");
 
     // Inicializar cliente seguro y bot de Telegram
     WiFiClientSecure client;
@@ -56,38 +48,39 @@ void taskTelegram_WiFi(void *pvParameters) {
     // Notificar inicio
     bot.sendMessage(chatID, "🤖 *Sistema VerdeVital conectado a WiFi y listo para recibir datos*", "Markdown");
     bot.sendMessage(chatID, "🌱 Instrucciones de funcionamiento usa /verDatos para ver los datos actuales, /verUmbrales para ver los umbrales actuales, /modificarUmbral <parametro> <valor> para modificar un umbral :3", "Markdown");
+    bot.setMyCommands(
+        "[{\"command\":\"/verDatos\",\"description\":\"Ver datos actuales\"},"
+        "{\"command\":\"/verUmbrales\",\"description\":\"Ver umbrales actuales\"},"
+        "{\"command\":\"/modificarUmbral <parametro> <valor>\",\"description\":\"Modificar un umbral\"}]"
+    );
+
     SensorData buffer;
+    buffer.ppm = 0;
+    buffer.temperature = 0;
+    buffer.humidity = 0;
+    buffer.soilWet = 0;
+    buffer.light = 0;
+    buffer.dateTime = RtcDateTime(0);
+
     while (true) {
         if (xSemaphoreTake(mutex, portMAX_DELAY)) {
-            // Verificar umbrales y notificar si se superan
-            String alert = checkThresholds();
-            if (alert.length() > 0) bot.sendMessage(chatID, alert, "Markdown");
-            
-            // Cambiar el estado del bot si se recibe un comando
             buffer = data;
-            handleTelegramCommands(bot, chatID, buffer);
-            xSemaphoreGive(mutex); // Liberar el mutex
+            xSemaphoreGive(mutex);
         } else {
             Serial.println("⚠️ No se pudo obtener el mutex para enviar datos");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(DELAY_TIME));
+        // Atender comandos de Telegram
+        handleTelegramCommands(bot, chatID, buffer);
+        // Verificar umbrales y notificar si se superan
+        String alert = checkThresholds(buffer);
+        if (alert.length() > 0) bot.sendMessage(chatID, alert, "Markdown");
+            
+        vTaskDelay(pdMS_TO_TICKS(TELEGRAM_DELAY_TIME));
     }
 }
 
-String checkThresholds() {
-    String alert = "";
-
-    if (data.light < thresholds.light)                  alert += "🔅 Luz baja: " + String(data.light) + " lx\n";
-    if (data.temperature > thresholds.temperature)      alert += "🌡 Temperatura alta: " + String(data.temperature) + " °C\n";
-    if (data.humidity > thresholds.humidity)            alert += "💧 Humedad alta: " + String(data.humidity) + " %\n";
-    if (data.ppm > thresholds.ppm)                      alert += "🌫 PPM alto: " + String(data.ppm) + "\n";
-    if (data.soilWet < thresholds.soilWet)              alert += "🌱 Suelo seco: " + String(data.soilWet) + "\n";  
-    
-    return alert;
-}
-
-void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, SensorData buffer) {
+void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatID, SensorData buffer) {
     int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
 
     while (numNewMessages) {
@@ -95,7 +88,7 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, Sen
             String msg = bot.messages[i].text;
             String sender = bot.messages[i].chat_id;
 
-            if (sender != chatId) continue;
+            if (sender != chatID) continue;
 
             if (msg.startsWith("/modificarUmbral")) {
                 int space1 = msg.indexOf(' ', 17);
@@ -105,7 +98,7 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, Sen
                     float value = valueStr.toFloat();
 
                     if (isnan(value) && value < 0) {
-                        bot.sendMessage(chatId, "❌ Valor no válido.", "");
+                        bot.sendMessage(chatID, "❌ Valor no válido.", "");
                         continue;
                     }
 
@@ -115,13 +108,13 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, Sen
                     else if (param == "ppm") thresholds.ppm = value;
                     else if (param == "suelo") thresholds.soilWet = value;
                     else {
-                        bot.sendMessage(chatId, "❌ Parámetro no válido.", "");
+                        bot.sendMessage(chatID, "❌ Parámetro no válido.", "");
                         continue;
                     }
 
-                    bot.sendMessage(chatId, "✅ Nuevo umbral de " + param + ": " + String(value), "");
+                    bot.sendMessage(chatID, "✅ Nuevo umbral de " + param + ": " + String(value), "");
                 } else {
-                    bot.sendMessage(chatId, "❌ Formato de comando incorrecto.", "");
+                    bot.sendMessage(chatID, "❌ Formato de comando incorrecto.", "");
                 }
             }
 
@@ -133,7 +126,7 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, Sen
                         + "💧 Hum: " + String(buffer.humidity) + " %\n"
                         + "🌫 PPM: " + String(buffer.ppm) + "\n"
                         + "🌱 Suelo: " + String(buffer.soilWet);
-                bot.sendMessage(chatId, report, "Markdown");
+                bot.sendMessage(chatID, report, "Markdown");
             }
 
             // Ver umbrales actuales
@@ -144,12 +137,11 @@ void handleTelegramCommands(UniversalTelegramBot &bot, const String &chatId, Sen
                 report += "💧 Hum > " + String(thresholds.humidity) + "\n";
                 report += "🌫 PPM > " + String(thresholds.ppm) + "\n";
                 report += "🌱 Suelo < " + String(thresholds.soilWet);
-                bot.sendMessage(chatId, report, "Markdown");
+                bot.sendMessage(chatID, report, "Markdown");
             }
         }
 
         numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-        vTaskDelay(pdMS_TO_TICKS(100)); 
     }
 }
 

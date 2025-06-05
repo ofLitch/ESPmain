@@ -18,6 +18,5 @@ struct SensorData {
     RtcDateTime dateTime;     ///< Hora leída por el DS1302
 } data, incomingReadings;
 
-extern SensorData data;
 
 #endif // SENSORDATA_H
